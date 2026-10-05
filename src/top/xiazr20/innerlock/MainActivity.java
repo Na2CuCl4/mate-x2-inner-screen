@@ -1,14 +1,16 @@
-package net.weng.innerlock;
+package top.xiazr20.innerlock;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
+import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
-import android.net.Uri;
+import android.graphics.drawable.RippleDrawable;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -42,6 +44,10 @@ public final class MainActivity extends Activity {
     private Switch autoSwitch;
     private boolean updating;
     private boolean busy;
+    private boolean resumed;
+    private int statusGeneration;
+    private Toast setupStepOne;
+    private Toast setupStepTwo;
     private String latestDetails = "尚未读取状态。";
 
     @Override public void onCreate(Bundle savedInstanceState) {
@@ -53,13 +59,15 @@ public final class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        resumed = true;
         refreshPermissions();
-        if (FoldController.isAutoEnabled(this) && FoldController.permissionsReady(this)) {
-            if (!AutoLockService.start(this)) {
-                feedback.setText("自动恢复未能启动，请查看诊断信息和系统应用设置。");
-            }
-        }
-        refreshStatus();
+        refreshStatus(true);
+    }
+
+    @Override protected void onPause() {
+        resumed = false;
+        statusGeneration++;
+        super.onPause();
     }
 
     @Override protected void onDestroy() {
@@ -108,30 +116,35 @@ public final class MainActivity extends Activity {
         autoSwitch.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         autoSwitch.setPadding(0, dp(3), 0, dp(3));
         automation.addView(autoSwitch, new LinearLayout.LayoutParams(-1, -2));
-        autoSummary = text("开启后在亮屏时恢复锁定，并显示后台运行通知。", 13, MUTED, false);
+        autoSummary = text("开启后及每次开机时，等待系统就绪、屏幕点亮后锁定。确认成功即停止服务并移除通知。", 13, MUTED, false);
         add(automation, autoSummary, 10);
         add(automation, text("启动画面、恢复模式等早期阶段仍可能使用外屏。", 12, MUTED, false), 8);
         autoSwitch.setOnCheckedChangeListener((view, enabled) -> {
             if (updating) return;
-            if (!FoldController.permissionsReady(this)) {
+            statusGeneration++;
+            if (enabled && !FoldController.permissionsReady(this)) {
                 refreshPermissions();
                 toast("请先完成下面的一次性电脑授权。");
                 return;
             }
             try {
-                if (enabled && !AutoLockService.start(this)) {
-                    feedback.setText("自动恢复未能启动，请查看诊断信息和系统应用设置。");
-                    syncAutoSwitch();
-                    return;
+                if (enabled) {
+                    FoldController.setAutoEnabled(this, true);
+                    if (!AutoLockService.start(this)) {
+                        feedback.setText("开机自动恢复已开启，但本次服务未能启动。请查看诊断信息和应用启动管理。");
+                        syncAutoSwitch();
+                        return;
+                    }
+                } else {
+                    AutoLockService.stop(this);
                 }
-                if (!enabled) AutoLockService.stop(this);
-                feedback.setText(enabled ? "自动恢复已开启，正在检查内屏状态。" : "自动恢复已关闭；当前显示状态保持不变。");
+                feedback.setText(enabled ? "开机自动恢复已开启，正在检查内屏状态；锁定成功后服务会自动停止。" : "开机自动恢复已关闭；当前显示状态保持不变。");
                 syncAutoSwitch();
                 handler.postDelayed(this::refreshStatus, 1800);
             } catch (RuntimeException e) {
-                FoldController.setAutoEnabled(this, false);
                 syncAutoSwitch();
-                feedback.setText("后台服务未能启动：" + e.getMessage());
+                feedback.setText(enabled ? "开机自动恢复已开启，但本次服务未能启动：" + e.getMessage()
+                        : "停止自动恢复时发生错误，请查看诊断信息：" + e.getMessage());
             }
         });
 
@@ -171,11 +184,43 @@ public final class MainActivity extends Activity {
         LinearLayout help = card(content, 16);
         add(help, text("如果开机后没有自动恢复", 14, INK, true), 0);
         add(help, text("在华为“应用启动管理”中允许本应用自启动、关联启动和后台活动。强行停止应用后，需要重新打开它才能恢复自动运行。", 13, MUTED, false), 8);
-        Button appSettings = button("打开应用设置", false);
-        appSettings.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                Uri.parse("package:" + getPackageName()))));
+        add(help, text("进入后点击“应用启动管理”，找到“内屏锁定”；关闭“自动管理”，允许全部启动方式。", 13, MUTED, false), 8);
+        Button appSettings = button("打开应用和服务", false);
+        appSettings.setOnClickListener(v -> openAppAndServices());
         add(help, appSettings, 10);
         add(content, text("仅控制本机折叠屏 · 无联网权限 · 版本 1.0", 11, MUTED, false), 18);
+    }
+
+    private void openAppAndServices() {
+        Intent appAndServices = new Intent().setClassName("com.android.settings",
+                "com.android.settings.Settings$AppAndNotificationDashboardActivity");
+        try {
+            startActivity(appAndServices);
+            showSetupSteps("点击“应用启动管理”，找到“内屏锁定”");
+        } catch (ActivityNotFoundException | SecurityException unavailable) {
+            String manualPath = "请手动进入：设置 → 应用和服务 → 应用启动管理 → 内屏锁定。";
+            feedback.setText(manualPath);
+            try {
+                startActivity(new Intent(Settings.ACTION_SETTINGS));
+                showSetupSteps("应用和服务 → 应用启动管理 → 内屏锁定");
+            } catch (ActivityNotFoundException | SecurityException settingsUnavailable) {
+                feedback.setText("无法打开系统设置。" + manualPath);
+                Toast.makeText(this, manualPath, Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
+    private void showSetupSteps(String firstStep) {
+        if (setupStepOne != null) setupStepOne.cancel();
+        if (setupStepTwo != null) setupStepTwo.cancel();
+        // Distinct text Toasts are queued by Android, so accessibility duration
+        // settings are respected and the second step does not replace the first.
+        // Use the application context: both hints should remain over Settings.
+        setupStepOne = Toast.makeText(getApplicationContext(), firstStep, Toast.LENGTH_LONG);
+        setupStepTwo = Toast.makeText(getApplicationContext(),
+                "关闭“自动管理”，允许全部启动方式", Toast.LENGTH_LONG);
+        setupStepOne.show();
+        setupStepTwo.show();
     }
 
     private void changeMode(boolean lock) {
@@ -185,6 +230,7 @@ public final class MainActivity extends Activity {
             toast("需要先完成一次性电脑授权。");
             return;
         }
+        statusGeneration++;
         busy = true;
         refreshPermissions();
         feedback.setText(lock ? "正在锁定内屏…" : "正在恢复自动切换…");
@@ -199,11 +245,23 @@ public final class MainActivity extends Activity {
     }
 
     private void refreshStatus() {
-        if (isFinishing() || isDestroyed() || busy) return;
+        refreshStatus(false);
+    }
+
+    private void refreshStatus(boolean restoreIfNeeded) {
+        if (!resumed || isFinishing() || isDestroyed() || busy) return;
+        int generation = ++statusGeneration;
         FoldController.requestStatus(this, result -> {
-            if (isFinishing() || isDestroyed()) return;
+            if (!resumed || isFinishing() || isDestroyed() || generation != statusGeneration) return;
             render(result);
             refreshPermissions();
+            if (restoreIfNeeded && !busy && FoldController.isAutoEnabled(this)
+                    && FoldController.permissionsReady(this)
+                    && (result.state == null || !result.state.locked)) {
+                if (!AutoLockService.start(this)) {
+                    feedback.setText("开机自动恢复仍已开启，但本次服务未能启动。请查看诊断信息和应用启动管理。");
+                }
+            }
         });
     }
 
@@ -233,7 +291,7 @@ public final class MainActivity extends Activity {
         permissionSetup.setVisibility(ready ? View.GONE : View.VISIBLE);
         lockButton.setEnabled(ready && !busy);
         unlockButton.setEnabled(ready && !busy);
-        autoSwitch.setEnabled(ready && !busy);
+        autoSwitch.setEnabled(!busy && (ready || FoldController.isAutoEnabled(this)));
         syncAutoSwitch();
     }
 
@@ -242,8 +300,8 @@ public final class MainActivity extends Activity {
         boolean enabled = FoldController.isAutoEnabled(this);
         autoSwitch.setChecked(enabled);
         autoSummary.setText(enabled
-                ? "已开启。重启和再次亮屏后自动检查；恢复自动切换会同时关闭此功能。"
-                : "开启后在亮屏时恢复锁定，并显示后台运行通知。");
+                ? "已开启。等待就绪和亮屏时可能显示通知；锁定成功即停止服务，下次开机仍会恢复。恢复自动切换会关闭此功能。"
+                : "开启后及每次开机时，等待系统就绪、屏幕点亮后锁定。确认成功即停止服务并移除通知。");
         updating = false;
     }
 
@@ -286,14 +344,34 @@ public final class MainActivity extends Activity {
         view.setTextSize(15);
         view.setAllCaps(false);
         view.setGravity(Gravity.CENTER);
-        view.setTextColor(primary ? Color.WHITE : GREEN);
+        view.setTextColor(new ColorStateList(new int[][]{
+                {-android.R.attr.state_enabled}, {}
+        }, new int[]{Color.rgb(115, 130, 128), primary ? Color.WHITE : GREEN}));
         view.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         view.setMinHeight(dp(48));
         view.setMinimumHeight(dp(48));
         view.setPadding(dp(14), dp(9), dp(14), dp(9));
-        view.setBackground(round(primary ? GREEN : Color.rgb(229, 239, 236), 14));
+        view.setBackground(buttonBackground(primary));
+        // Keep the flat style; RippleDrawable supplies the press/release animation.
         view.setStateListAnimator(null);
         return view;
+    }
+
+    private RippleDrawable buttonBackground(boolean primary) {
+        int normal = primary ? GREEN : Color.rgb(229, 239, 236);
+        int pressed = primary ? Color.rgb(18, 88, 77) : Color.rgb(205, 222, 217);
+        int disabled = primary ? Color.rgb(203, 215, 212) : Color.rgb(236, 239, 239);
+        GradientDrawable fill = round(normal, 14);
+        fill.setColor(new ColorStateList(new int[][]{
+                {-android.R.attr.state_enabled},
+                {android.R.attr.state_pressed},
+                {android.R.attr.state_focused},
+                {}
+        }, new int[]{disabled, pressed, pressed, normal}));
+        ColorStateList ripple = new ColorStateList(new int[][]{
+                {-android.R.attr.state_enabled}, {}
+        }, new int[]{Color.TRANSPARENT, primary ? 0x30FFFFFF : 0x24176E60});
+        return new RippleDrawable(ripple, fill, round(Color.WHITE, 14));
     }
 
     private LinearLayout card(LinearLayout parent, int top) {

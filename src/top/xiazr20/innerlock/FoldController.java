@@ -1,7 +1,6 @@
-package net.weng.innerlock;
+package top.xiazr20.innerlock;
 
 import android.content.Context;
-import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.os.Handler;
@@ -144,8 +143,7 @@ public final class FoldController {
 
     /** Stop automatic relocking before scheduling the restore, including queued auto work. */
     public static void requestUnlock(Context context, Callback callback) {
-        setAutoEnabled(context, false);
-        context.getApplicationContext().stopService(new Intent(context, AutoLockService.class));
+        AutoLockService.stop(context);
         submit(context, callback, FoldController::unlock);
     }
 

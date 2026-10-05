@@ -12,7 +12,7 @@ import zipfile
 
 PROJECT = Path(__file__).resolve().parent
 DEFAULT_TOOLS = PROJECT.parent / "tmp" / "innerlock-build-tools"
-PACKAGE = "net.weng.innerlock"
+PACKAGE = "top.xiazr20.innerlock"
 
 
 def run(arguments: list[str | Path], label: str) -> None:
@@ -62,7 +62,7 @@ def main() -> None:
     run([sdk / "aapt2.exe", "compile", "--dir", "res", "-o", resource_zip], "Compile resources")
     link = [sdk / "aapt2.exe", "link", "-o", resources_apk, "-I", android_jar, "--manifest", manifest,
             "--java", build / "generated", "--custom-package", PACKAGE, "--min-sdk-version", "26",
-            "--target-sdk-version", "31", "--version-code", "1", "--version-name", "1.0", "--auto-add-overlay"]
+            "--target-sdk-version", "31", "--auto-add-overlay"]
     if (PROJECT / "assets").is_dir():
         link.extend(["-A", "assets"])
     link.append(resource_zip)
